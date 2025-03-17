@@ -14,7 +14,7 @@ During the analysis process, I conducted data cleaning and integration, preproce
 # 2)-Exploratory analysis
 
 ### 2.1) Basic information of 18 session
-```{r}
+```{r, echo=FALSE}
 set.seed(456)
 ```
 
