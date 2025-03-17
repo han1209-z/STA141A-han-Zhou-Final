@@ -1,0 +1,792 @@
+---
+title: "STA 141A winter 2025 Final Report"
+author: "Han Zhou"
+date: "2025-02-10"
+output: html_document
+---
+
+# Introduction
+
+In this project, I aim to understand how activity is associated with decision-making processes. I used a dataset of 18 experimental sessions from 4 mice to analyze how brain activity in the visual cortex affects their ability to make correct choices in visual tasks. During the experiment, mice were presented with visual stimuli of different contrasts, which were displayed on two screens. Mice need to rotate a wheel to determine which side has higher contrast, and ultimately their choice determines whether they succeed or fail. The goal of the project is to integrate and analyze this data to explore patterns of brain activity, especially changes in neural activity over different time periods, and how they affect mouse choices, in order to understand their connection with decision-making processes.
+
+During the analysis process, I conducted data cleaning and integration, preprocessed data from different experimental sessions, and ensured that all necessary variables (such as contrast differences, spike rate, feedback types, etc.) were correctly integrated. Then, I used the XGBoost model for prediction, evaluating which factors were most important for the predicted results by combining time and experimental feedback types. In order t analyze the performance of the model, I also used various evaluation metrics such as accuracy, confusion matrix, etc. to visualize the model's performance in predicting success and failure.
+
+# 2)-Exploratory analysis
+
+### 2.1) Basic information of 18 session
+```{r}
+set.seed(456)
+```
+
+```{r, echo=FALSE}
+
+session=list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('/Users/zhou/Desktop/STA141AProject/Data/session',i,'.rds',sep=''))
+}
+
+behavior_stats <- data.frame()
+for (i in 1:18) {
+  feedback_type <- session[[i]]$feedback_type
+  contrast_left <- session[[i]]$contrast_left
+  contrast_right <- session[[i]]$contrast_right
+  spks <- session[[i]]$spks
+  date=session[[i]]$date_exp
+  
+
+  success_count <- sum(feedback_type == 1)
+  failure_count <- sum(feedback_type == -1) 
+  success_rate <- success_count / length(feedback_type) 
+  
+  
+  neuron_count <- nrow(spks[[i]])  
+
+  session_summary <- data.frame(
+    session_id = i,
+    mouse_name = session[[i]]$mouse_name[1],
+    date=date,
+    neuron_count = neuron_count,
+    trial_count = length(feedback_type),
+    mean_contrast_left = mean(contrast_left),
+    mean_contrast_right = mean(contrast_right),
+    success_count = success_count,
+    failure_count = failure_count,
+    success_rate = success_rate
+  )
+  
+
+  behavior_stats <- rbind(behavior_stats, session_summary)
+}
+head(behavior_stats)
+
+```
+
+Firstly, I analyzed the specific information of 18 sessions and created a table, including the mouse names, experiment dates, number of experiments, number of neurons, average contrast between left and right , as well as the number and success rate of successful and failed experiments for each session. The number of neurons in each session ranges from 474 to 1769. Forssmann's session 4 has the highest number of neurons (1769), while Lederberg's session 16 has the lowest number (474). There is also a difference in the number of experiments, with session 10(Hench) having the highest number of experiments (447), while Cori's session 1 had the lowest (114). The majority of sessions have a success rate between 0.6 and 0.8, with Lederberg's session 17 (83.06%) being the highest and Cori's session 1 (60.52%) being the lowest. The mean contrast_reft ranges from 0.23 to 0.44, and the right contrast ranges from 0.26 to 0.43.
+
+Observing the performance of each mouse, Lederberg had a higher overall success rate, while Cori had a relatively lower success rate. For each mouse, the success rate of most experiments increases as the experiment progresses, which may be related to reward and punishment mechanisms. I also found an interesting phenomenon that in mean contrast, when the left and right mean contrasts are similar, the success rate is higher, such as in sessions 15 and 18. Next, I analyze the difference between the left and right stimuli.
+
+### 2.2) relationship between the difference in contrast and feedback type
+
+```{r, echo=FALSE}
+trial_symmetry <- data.frame()
+
+for (i in 1:18) {
+  contrast_left <- session[[i]]$contrast_left
+  contrast_right <- session[[i]]$contrast_right
+  feedback_type <- session[[i]]$feedback_type
+  
+  contrast_diff <- abs(contrast_left - contrast_right)
+  
+
+  session_trials <- data.frame(
+    session_id = i,
+    trial_id = 1:length(contrast_diff),
+    mouse_name = session[[i]]$mouse_name[1],
+    contrast_diff = contrast_diff,
+    feedback_type = feedback_type
+  )
+  
+  trial_symmetry <- rbind(trial_symmetry, session_trials)
+}
+
+
+head((trial_symmetry))
+
+library(ggplot2)
+
+ggplot(trial_symmetry, aes(x = contrast_diff, fill = as.factor(feedback_type))) +
+  geom_histogram(binwidth = 0.1, position = "dodge") +
+  labs(
+    title = "left-right difference and feedback type",
+    x = "contrast_left - contrast_right",
+    y = "Number of experiments",
+    fill = "Type"
+  ) +
+  scale_fill_manual(values = c("1" = "blue", "-1" = "red"), labels = c("Failure -1", "Success 1")) +
+  theme_minimal()
+
+
+```
+
+```{r, echo=FALSE}
+library(ggplot2)
+
+ggplot(behavior_stats, aes(x = factor(session_id), y = success_rate, fill = mouse_name)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = " 1-18 success rate",
+    x = "Session ID",
+    y = "success_rate"
+  ) +
+  scale_fill_discrete(name = "Mouse Name") +
+  theme_minimal()
+
+```
+
+This bar chart shows the relationship between the difference in left and right contrast and the success or failure of the experiment. From the graph, it can be seen that when the contrast on the left and right sides is equal (contrast difference=0.00), the difference between the number of successful experiments and the number of failed experiments is not very large. This indicates that the accuracy of mice is slightly lower when the left and right sides are the same, which may be influenced by experimental control factors or their own decision-making preferences.
+
+As the contrast difference increases, the number of failed experiments relatively decreases, while successful experiments still dominate, indicating that mice can make more accurate decisions when the contrast is high. Especially when the contrast diff is 1.00 (completely bright on the left and completely dark on the right), the number of successful experiments reaches its highest and the number of failed experiments is the lowest, indicating that mice have the most stable judgment ability under extreme conditions
+
+### 2.3) The relationship between all stimuli is 0 and the feedback type & all stimuli is equal and the feedback type
+
+```{r, echo=FALSE}
+
+zero_choice_stats <- data.frame()
+
+for (i in 1:18) {
+  contrast_left <- session[[i]]$contrast_left
+  contrast_right <- session[[i]]$contrast_right
+  feedback_type <- session[[i]]$feedback_type
+  
+
+  zero_trials <- which(contrast_left == 0 & contrast_right == 0)
+
+  if (length(zero_trials) == 0) next
+  
+  left_choices <- sum(feedback_type[zero_trials] == 1)
+  right_choices <- sum(feedback_type[zero_trials] == -1)
+ 
+  if (length(right_choices) == 0) right_choices <- 0
+  if (length(left_choices) == 0) left_choices <- 0
+  
+  
+  session_summary <- data.frame(
+    session_id = i,
+    mouse_name = session[[i]]$mouse_name[1],
+    zero_trials_count = length(zero_trials),
+    left_choice_count = left_choices,
+    right_choice_count = right_choices,
+    left_choice_rate = left_choices / length(zero_trials),
+    right_choice_rate = right_choices / length(zero_trials)
+  )
+  
+  zero_choice_stats <- rbind(zero_choice_stats, session_summary)
+}
+
+
+head(zero_choice_stats)
+
+ggplot(zero_choice_stats, aes(x = factor(session_id))) +
+  geom_bar(aes(y = left_choice_rate, fill = "Left Choice"), stat = "identity", position = "dodge", color = "black") +
+  geom_bar(aes(y = right_choice_rate, fill = "Right Choice"), stat = "identity", position = "dodge", color = "black") +
+  facet_wrap(~mouse_name, scales = "free_y") +
+  labs(
+    title = "(Both left and right stimulus is 0)",
+    x = "Session ID",
+    y = "proportion"
+  ) +
+  scale_fill_manual(
+    values = c("Left Choice" = "blue", "Right Choice" = "red"),
+    name = "Choice Direction"
+  ) +
+  theme_minimal()
+
+
+```
+
+These histograms show the proportional distribution of left and right stimuli selected by mice and grouped according to mice, with both stimuli being 0. Overall, mice show a certain left preference under this symmetrical stimulation condition. If the selection is random, theoretically we should observe that the selection ratio is close to 50%, the height of the blue (left) and red (right) bar charts should be roughly equal.
+
+In actual data, the proportion of left-side selection (blue) is significantly higher than that of right-side selection (red), especially in the experiments of Forsmann and Hench in mice.This preference may stem from differences in behavioral habits, or brain function. This analysis provides assistance for predictive models. If the left selection rate deviates significantly from 50%, it indicates that the feedback type is not completely random, but is influenced by inherent preferences or other factors, which may affect the model's ability to predict results under these conditions.
+
+```{r, echo=FALSE}
+
+library(ggplot2)
+library(dplyr)
+
+equal_stimulus_stats <- data.frame()
+
+for (i in 1:18) {
+  contrast_left <- session[[i]]$contrast_left
+  contrast_right <- session[[i]]$contrast_right
+  
+  equal_trials <- which(contrast_left == contrast_right)
+  equal_count <- length(equal_trials) 
+  
+  session_summary <- data.frame(
+    session_id = i,
+    mouse_name = session[[i]]$mouse_name[1],
+    total_trials = length(contrast_left),
+    equal_stimulus_count = equal_count,
+    equal_stimulus_rate = equal_count / length(contrast_left) 
+  )
+  
+  equal_stimulus_stats <- bind_rows(equal_stimulus_stats, session_summary)
+}
+
+head(equal_stimulus_stats)
+
+equal_choice_stats <- data.frame()
+
+for (i in 1:18) {
+  contrast_left <- session[[i]]$contrast_left
+  contrast_right <- session[[i]]$contrast_right
+  feedback_type <- session[[i]]$feedback_type
+
+  equal_trials <- which(contrast_left == contrast_right)
+  
+  if (length(equal_trials) == 0) next
+  
+  left_choices <- sum(feedback_type[equal_trials] == 1)
+  right_choices <- sum(feedback_type[equal_trials] == -1)
+
+  session_summary <- data.frame(
+    session_id = i,
+    mouse_name = session[[i]]$mouse_name[1],
+    equal_trials_count = length(equal_trials),
+    left_choice_count = left_choices,
+    right_choice_count = right_choices,
+    left_choice_rate = ifelse(length(equal_trials) > 0, left_choices / length(equal_trials), 0),
+    right_choice_rate = ifelse(length(equal_trials) > 0, right_choices / length(equal_trials), 0)
+  )
+  
+  equal_choice_stats <- bind_rows(equal_choice_stats, session_summary)
+}
+
+head(equal_choice_stats)
+
+ggplot(equal_choice_stats, aes(x = factor(session_id))) +
+  geom_bar(aes(y = left_choice_rate, fill = "Left Choice"), stat = "identity", position = "dodge", color = "black") +
+  geom_bar(aes(y = right_choice_rate, fill = "Right Choice"), stat = "identity", position = "dodge", color = "black") +
+  facet_wrap(~mouse_name, scales = "free_y") +
+  labs(
+    title = "All stimuli are equal",
+    x = "Session ID",
+    y = "Proportion"
+  ) +
+  scale_fill_manual(
+    values = c("Left Choice" = "blue", "Right Choice" = "red"),
+    name = "Choice Direction"
+  ) +
+  theme_minimal()
+
+
+```
+
+These histograms show the proportional distribution of left and right stimuli selected and grouped by mice, with both stimuli being 0. Overall, under this symmetrical stimulus condition, mice also show a certain left preference. The proportion of left side selection (blue) is significantly higher than that of right side selection (red), especially in Forsmann and Hench's experiments on mice. This preference may stem from differences in behavioral habits or brain function. Fosman showed a strong preference for the left wing. In different conversations, the proportion of experiments with the same stimulus also varies, with Hench having the lowest proportion of experiments with the same stimulus, while Forsmann and Lederberg have relatively higher proportions. This indicates that even under completely symmetrical stimuli, the selection behavior of mice is still affected.
+
+This analysis provides assistance for predictive models by examining whether mice exhibit selection bias (contrast difference=0 or contrast left=contrast right) in the absence or similarity of left and right stimuli. Finally, since the prediction error is usually higher when the contrast diff=0, this analysis helps explain why relying solely on the contrast diff may not be sufficient for accurate prediction. On the contrary, combining neural activity features (SPK) enhances the model's ability to capture decision patterns, which should improve predictive performance.
+
+### 2.4) numbers of spikes of neurons in the visual cortex in time bins
+
+```{r, echo=FALSE}
+library(ggplot2)
+library(dplyr)
+
+
+mean_spike_summary <- data.frame(session_id = integer(), mean_spike_rate = numeric())
+
+
+for (i in 1:18) {
+  if (!"spks" %in% names(session[[i]])) next  
+
+  
+  spike_rates <- sapply(session[[i]]$spks, function(matrix) mean(matrix, na.rm = TRUE))
+  mean_spike <- mean(spike_rates, na.rm = TRUE)  
+  
+
+  mean_spike_summary <- rbind(mean_spike_summary, data.frame(session_id = i, mean_spike_rate = mean_spike))
+}
+
+ggplot(mean_spike_summary, aes(x = session_id, y = mean_spike_rate)) +
+  geom_line(color = "blue") +
+  geom_point(color = "red") +
+  labs(title = "Mean Spike Rate Across 18 Sessions",
+       x = "Session ID",
+       y = "Mean Spike Rate") +
+  theme_minimal()
+
+
+```
+
+```{r, echo=FALSE}
+library(ggplot2)
+library(dplyr)
+
+
+spike_feedback_summary <- data.frame(feedback_type = integer(), mean_spike_rate = numeric())
+
+
+for (i in 1:18) {
+  if (!"spks" %in% names(session[[i]]) || !"feedback_type" %in% names(session[[i]])) next  # 确保 session 有 spike 和 feedback 数据
+  
+
+  spike_rates <- sapply(session[[i]]$spks, function(matrix) mean(matrix, na.rm = TRUE))
+  
+  
+  feedbacks <- session[[i]]$feedback_type
+  
+
+  session_data <- data.frame(feedback_type = feedbacks, mean_spike_rate = spike_rates)
+  spike_feedback_summary <- rbind(spike_feedback_summary, session_data)
+}
+
+
+
+ggplot(spike_feedback_summary, aes(x = mean_spike_rate, color = as.factor(feedback_type), fill = as.factor(feedback_type))) +
+  geom_density(alpha = 0.3) +
+  scale_fill_manual(values = c("-1" = "blue", "1" = "red"), labels = c("Failure (-1)", "Success (1)")) +
+  scale_color_manual(values = c("-1" = "blue", "1" = "red"), labels = c("Failure (-1)", "Success (1)")) +
+  labs(title = "Density of Mean Spike Rate by Feedback Type",
+       x = "Mean Spike Rate",
+       y = "Density") +
+  theme_minimal()
+
+library(corrplot)
+library(ggplot2)
+ggplot(spike_feedback_summary, aes(x = mean_spike_rate, y = feedback_type)) +
+  geom_jitter(alpha = 0.3, color = "blue") +
+  geom_smooth(method = "lm", color = "red") +
+  labs(title = "Mean Spike Rate vs. Feedback Type",
+       x = "Mean Spike Rate",
+       y = "Feedback Type") +
+  theme_minimal()
+
+
+```
+
+The analysis of Mean Spike Rate over 18 experimental sessions showed significant fluctuations in neural activity between different experimental days, indicating that the neural response of mice is not stable and unchanging. Especially session 6, 12, and 16 showed significant peaks, which may be influenced by experimental conditions, learning effects. This change suggests that mean\_ spike rate may be an important feature for predicting feedbacktype (experimental success or failure), as higher neural activity may be closely related to decision-making processes in mice.
+
+From the density plot, it can be seen that there are certain differences in the Mean Spike Rate under different Feedback Types (success 1 vs failure -1). The Mean Spike Rate distribution of the successful group is generally skewed to the right, meaning that the Mean Spike Rate of successful trials is slightly higher than that of failed trials. In the area above 0.04, the density of the successful group (red curve) is higher than that of the failed group, while between 0.02-0.03, the density of the failed group (blue curve) is higher, indicating that a higher Mean Spike Rate may help improve the success rate. However, there is still significant overlap between the density curves of the two groups, indicating that the influence of Mean Spike Rate on feedback results is not a decisive factor, but rather a combined effect with other variables such as Contrast Difference. Added a scatter plot, where the red regression line slopes upwards to further demonstrate that higher mean spike rates have a higher success rate. From the perspective of model optimization, Mean Spike Rate as an input feature can provide certain predictive information, which can be used in XGBoost training to further analyze its importance and determine its contribution to decision results.
+
+```{r, echo=FALSE}
+
+spike_rates <- data.frame()
+
+
+for (i in 1:18) {
+  if (!("spks" %in% names(session[[i]])) || is.null(session[[i]]$spks)) {
+    next  
+  }
+  
+  for (j in seq_along(session[[i]]$spks)) {
+    spike_matrix <- session[[i]]$spks[[j]] 
+    
+    if (is.null(spike_matrix) || length(spike_matrix) == 0) {
+      next 
+    }
+    
+    
+    early_spike_rate <- mean(spike_matrix[, 1:20], na.rm = TRUE)
+    late_spike_rate <- mean(spike_matrix[, 21:40], na.rm = TRUE)
+    
+
+    temp_df <- data.frame(
+      session_id = i,
+      mouse_name = session[[i]]$mouse_name,
+      feedback_type = session[[i]]$feedback_type[j],
+      early_spike_rate = early_spike_rate,
+      late_spike_rate = late_spike_rate
+    )
+    
+
+    spike_rates <- rbind(spike_rates, temp_df)
+  }
+}
+
+
+head(spike_rates)
+
+```
+
+```{r, echo=FALSE}
+spike_rates$feedback_type <- factor(spike_rates$feedback_type, levels = c(-1, 1))
+ggplot(spike_rates, aes(x = early_spike_rate, color = as.factor(feedback_type), fill = as.factor(feedback_type))) +
+  geom_density(alpha = 0.3) +
+  scale_fill_manual(values = c("blue", "red"), labels = c("Failure (-1)", "Success (1)")) +
+  scale_color_manual(values = c("blue", "red"), labels = c("Failure (-1)", "Success (1)")) +
+  labs(title = "Density of Early Spike Rate by Feedback Type",
+       x = "Early Spike Rate",
+       y = "Density") +
+  theme_minimal()
+
+
+ggplot(spike_rates, aes(x = late_spike_rate, color = as.factor(feedback_type), fill = as.factor(feedback_type))) +
+  geom_density(alpha = 0.3) +
+  scale_fill_manual(values = c("blue", "red"), labels = c("Failure (-1)", "Success (1)")) +
+  scale_color_manual(values = c("blue", "red"), labels = c("Failure (-1)", "Success (1)")) +
+  labs(title = "Density of Late Spike Rate by Feedback Type",
+       x = "Late Spike Rate",
+       y = "Density") +
+  theme_minimal()
+
+```
+
+From the graph, it can be seen that the distribution of neural discharge rates for success (red) and failure (blue) is different. For Early Spike Rate, the density of failures is higher at lower values, while the density of successes is slightly higher at higher values, indicating that higher Early Spike Rates may be more likely to succeed, but the difference is not significant. For Late Spike Rate, the success density is more pronounced at higher values, while the failure density is higher at lower values, indicating that higher Late Spike Rate is more likely to lead to success. Overall, Late Spike Rate may have a greater impact on success rate than Early Spike Rate, but both features can be used for model prediction.
+
+### 2.5) neurons
+
+```{r, echo=FALSE}
+neuron_stats <- data.frame()
+
+for (i in 1:18) {
+  session_data <- session[[i]]
+  brain_areas <- session_data$brain_area
+  neuron_count <- table(brain_areas)
+  
+  session_summary <- data.frame(
+    session_id = i,
+    mouse_name = session_data$mouse_name[1],
+    total_neurons = length(brain_areas),
+    brain_areas = length(unique(brain_areas))
+  )
+  
+  neuron_stats <- rbind(neuron_stats, session_summary)
+}
+
+head(neuron_stats)
+
+```
+
+```{r, echo=FALSE}
+all_brain_areas <- c()
+
+for (i in 1:18) {
+  all_brain_areas <- c(all_brain_areas, session[[i]]$brain_area)
+}
+
+area_summary <- as.data.frame(table(all_brain_areas))
+colnames(area_summary) <- c("brain_area", "neuron_count")
+head(area_summary)
+
+library(ggplot2)
+
+ggplot(area_summary, aes(x = brain_area, y = neuron_count)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Total Neurons per Brain Area",
+       x = "Brain Area",
+       y = "Neuron Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+This graph shows the number of neurons recorded in each brain region and displays the distribution of neurons in different regions of the dataset. Overall, there are significant differences in the number of neurons in different brain regions, with more neurons in CA1, CA3, ACA, MOp, MOs, TH, VISp, and other areas mainly involved in memory, action, and vision, which may be related to left and right decision-making in mice. However, the number of neurons in the "root" area is much more than in other areas, which may be a neuron unrelated to the experimental purpose.
+
+# 3 Data integration
+
+### 3.1)integrate data
+
+In the data integration section, I extracted and constructed a feature dataset for predictive modeling. Firstly, I calculated the key features of neural activity, including mean spike rate, early/late spike rate, and peak spike time. Extract the contrast difference for each experiment feedback type， And store it in the dataset. I didn't choose a simple contrast left/right. Mice need to determine their turning direction based on the contrast difference between left and right stimuli, rather than relying solely on the left or right side.
+
+```{r, echo=FALSE}
+compute_spike_features <- function(spike_matrix, time_vector) {
+  if (is.null(spike_matrix) || length(spike_matrix) == 0) {
+    return(c(NA, NA, NA, NA, NA))  
+  }
+  
+  mean_spike_rate <- mean(spike_matrix, na.rm = TRUE)
+  spike_variability <- sd(spike_matrix, na.rm = TRUE)
+
+
+  early_spike_rate <- mean(spike_matrix[, 1:20], na.rm = TRUE)
+  late_spike_rate <- mean(spike_matrix[, 21:40], na.rm = TRUE)
+
+  peak_time_index <- which.max(rowSums(spike_matrix, na.rm = TRUE))
+  peak_time <- ifelse(length(time_vector) >= peak_time_index, time_vector[peak_time_index], NA)
+
+
+  if (is.na(peak_time)) {
+    peak_time <- NA
+  }
+  
+  return(c(mean_spike_rate, spike_variability, early_spike_rate, late_spike_rate, peak_time))
+}
+
+
+integrated_data <- data.frame()
+
+for (i in 1:18) {
+  if (!("contrast_left" %in% names(session[[i]])) || !("contrast_right" %in% names(session[[i]]))) {
+    next 
+  }
+
+  contrast_diff <- session[[i]]$contrast_left - session[[i]]$contrast_right
+  
+  for (j in 1:length(session[[i]]$spks)) {
+    if (is.null(session[[i]]$spks[[j]]) || length(session[[i]]$spks[[j]]) == 0) {
+      next  
+    }
+    
+    if (is.na(contrast_diff[j]) || is.na(session[[i]]$feedback_type[j])) {
+      next  
+    }
+
+
+    spike_features <- compute_spike_features(session[[i]]$spks[[j]], session[[i]]$time[[j]])
+
+
+    temp_df <- data.frame(
+      session_id = i,
+      mouse_name = session[[i]]$mouse_name,
+      contrast_diff = contrast_diff[j],
+      feedback_type = session[[i]]$feedback_type[j],
+      mean_spike_rate = spike_features[1],
+      spike_variability = spike_features[2],
+      early_spike_rate = spike_features[3],
+      late_spike_rate = spike_features[4],
+      peak_spike_time = spike_features[5]
+    )
+    
+
+    integrated_data <- rbind(integrated_data, temp_df)
+  }
+}
+
+
+head(integrated_data)
+
+
+```
+
+```{r, echo=FALSE}
+
+set.seed(123) 
+train_data <- subset(integrated_data, session_id %in% 2:17)
+test_data <- subset(integrated_data, session_id %in% c(1, 18))
+
+```
+
+### 3.2) PCA analysis
+
+```{r, echo=FALSE}
+library(ggplot2)
+library(caret)
+
+train_data_std <- scale(integrated_data[, c("mean_spike_rate", "early_spike_rate", "late_spike_rate")])
+
+
+pca_model <- prcomp(train_data_std, center = TRUE, scale. = TRUE)
+
+integrated_data$pca1 <- pca_model$x[, 1] 
+integrated_data$pca2 <- pca_model$x[, 2] 
+
+ggplot(integrated_data, aes(x = pca1, y = pca2, color = as.factor(feedback_type))) + 
+  geom_point() +  
+  labs(title = "PCA of Spike Rates", x = "PCA 1", y = "PCA 2") +  
+  scale_color_manual(values = c("red", "blue"), labels = c("Failure", "Success")) +
+  theme_minimal()  
+
+
+ggplot(integrated_data, aes(x = pca1, y = pca2, color = mouse_name)) +
+  geom_point() +
+  labs(title = "PCA: PC1 vs PC2", x = "PC1", y = "PC2") +
+  theme_minimal() +
+  scale_color_manual(values = c("red", "green", "cyan", "purple"))
+
+```
+
+In this section of data integration, I used principal component analysis (PCA) to reduce the dimensionality of neural activity features (such as spike rate) and identified the most important patterns of change in the data. Each principal component (PC) represents an important direction in the raw data. Specifically, the figure shows the results of PCA dimensionality reduction and analyzes the principal components. From the figure, it can be seen that different types of feedback (red indicates failure, blue indicates success) have significant overlap in the distribution of PC1 and PC2.
+
+PC1 (first principal component) represents the direction of the largest variance in the data, indicating that most of the information and changes are mainly concentrated in this direction. PC2 (second principal component) is the second largest variance direction in the data and is orthogonal to PC1. It represents another important variability besides PC1. PC1 and PC2 account for the majority of the variability and play a crucial role in distinguishing different types of feedback, such as success and failure.
+
+Although there are certain differences in neural activity between success and failure, these differences may not be very significant, especially in principal component space. But PCA analysis helped us reduce dimensions and provided assistance for the models.
+
+# 4 Predictive modeling
+
+### 4.1) Model selection
+
+```{r, echo=FALSE}
+library(xgboost)
+library(randomForest)
+library(caret)
+
+set.seed(456)
+train_data <- subset(integrated_data, session_id %in% 2:17)
+test_data <- subset(integrated_data, session_id %in% c(1, 18))
+
+train_data$feedback_type <- ifelse(train_data$feedback_type == -1, 0, 1)
+test_data$feedback_type <- ifelse(test_data$feedback_type == -1, 0, 1)
+train_data$mouse_name <- as.factor(train_data$mouse_name)
+test_data$mouse_name <- as.factor(test_data$mouse_name)
+
+train_data$mouse_name <- factor(train_data$mouse_name, levels = unique(train_data$mouse_name))
+test_data$mouse_name <- factor(test_data$mouse_name, levels = levels(train_data$mouse_name))
+
+
+train_x <- model.matrix(~ contrast_diff + mean_spike_rate + early_spike_rate + late_spike_rate + mouse_name - 1, data = train_data)
+train_y <- train_data$feedback_type
+
+test_x <- model.matrix(~ contrast_diff + mean_spike_rate + early_spike_rate + late_spike_rate + mouse_name - 1, data = test_data)
+test_y <- test_data$feedback_type
+
+models <- list(
+  logistic_model = glm(feedback_type ~ contrast_diff + mean_spike_rate + early_spike_rate + late_spike_rate + mouse_name,
+                       data = train_data, family = "binomial"),
+  
+  rf_model = randomForest(as.factor(feedback_type) ~ contrast_diff + mean_spike_rate + early_spike_rate + late_spike_rate + mouse_name,
+                          data = train_data, ntree = 50),
+  
+  xgb_model = xgboost(data = train_x, label = train_y, nrounds = 100, objective = "binary:logistic", verbose = 0)
+)
+
+
+for (name in names(models)) {
+  if (name == "logistic_model") {
+    pred_probs <- predict(models[[name]], test_data, type = "response")
+    pred <- ifelse(pred_probs > 0.5, 1, 0)
+  } else if (name == "rf_model") {
+    pred <- predict(models[[name]], test_data)
+  } else if (name == "xgb_model") {
+    pred_probs <- predict(models[[name]], test_x)
+    pred <- ifelse(pred_probs > 0.5, 1, 0)
+  }
+  
+  accuracy <- mean(pred == test_y)
+  print(paste(name, "Accuracy:", round(accuracy, 4)))
+}
+
+
+```
+```{r, echo=FALSE}
+
+logistic_model <- glm(feedback_type ~ contrast_diff + mean_spike_rate + early_spike_rate + late_spike_rate + mouse_name, 
+                      data = train_data, family = "binomial")
+
+
+logistic_pred <- predict(logistic_model, newdata = test_data, type = "response")
+
+
+ggplot(test_data, aes(x = mean_spike_rate, y = feedback_type)) +
+  geom_point(aes(color = feedback_type)) +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"), se = FALSE) +
+  labs(title = "Logistic Regression Fitted Curve", x = "Mean Spike Rate", y = "Feedback Type")
+
+
+
+correlation_matrix <- cor(train_data[, c("feedback_type","contrast_diff", "mean_spike_rate", "early_spike_rate", "late_spike_rate")])
+
+
+library(ggplot2)
+library(reshape2)
+
+
+correlation_data <- melt(correlation_matrix)
+
+ggplot(correlation_data, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "lightpink", high = "lightblue", mid = "white", midpoint = 0) +
+  geom_text(aes(label = round(value, 2)), color = "black") +
+  labs(title = "Correlation Matrix of Features", x = "Feature", y = "Feature") +
+  theme_minimal()
+```
+
+In the model section, I created three different models to predict data: Logistic Regression, Random Forest, and XGBoost. Each model has its unique advantages and is suitable for different types of data. Logistic regression, as a linear model, is used to explore the linear relationship between different features (such as contrast differences, average spike rates, etc.) and feedback types. The accuracy of the model is around 75, indicating that it can predict the feedback types of success and failure to a certain extent.
+
+--Why not choose logistic regression?
+
+However, logistic regression can only handle linear relationships and may have limited performance when dealing with complex data.From the graph, the model can only capture simple linear relationships, but does not take into account possible complex interaction effects or nonlinear features.
+
+From the correlation plot, it can be seen that the correlation between feedback_date and other variables is low, especially with variables such as contrast-diff, mean_spike rate, and early_spike rate, which are very weak. This means that the relationship between feedbacked type and these features is not linear, so the accuracy of using a linear model to predict feedbacked type will be limited.
+
+--Why chose XGBoost model
+
+Random forest, as an ensemble learning method, can handle nonlinear relationships and high-dimensional data, and has stronger generalization ability. Its accuracy is aroud 70, indicating a certain advantage in processing complex data. XGBoost, on the other hand, is a gradient boosting tree method with powerful predictive capabilities, especially suitable for handling complex and high-dimensional data. Although XGBoost's accuracy is slightly lower than logistic regression, its ability to express large and complex data far surpasses other models, so I chose XGBoost as the final model.
+
+### 4.2) Model training
+
+```{r, echo=FALSE}
+
+set.seed(456)
+library(caret)
+library(xgboost)
+train_x <- model.matrix(~ contrast_diff + mean_spike_rate + early_spike_rate + late_spike_rate + mouse_name-1 , data = train_data)
+train_y <- train_data$feedback_type
+
+test_x <- model.matrix(~ contrast_diff + mean_spike_rate + early_spike_rate + late_spike_rate + mouse_name-1 , data = test_data)
+test_y <- test_data$feedback_type
+
+params <- list(
+  objective = "binary:logistic",  
+  eval_metric = "logloss", 
+  max_depth = 7,
+  eta = 0.1,
+  colsample_bytree = 0.8,
+  subsample = 0.8
+)
+
+xgb_model <- xgboost(
+  data = train_x, 
+  label = train_y,
+  params = params, 
+  nrounds = 50,  
+  verbose = 1
+)
+
+```
+
+In the process of training the XGBoost model, I used data from sessions 2 to 17 for training. I extracted features such as contrast-diff, mean_stike_rate, early_stike_rate, late_stike_rate, etc. from train_data, and included mouse_name to distinguish different mice. I will use feedbacked type as the target variable and classify it into 0 and 1. In order to optimize the performance of the model, I set some hyperparameters of XGBoost, such as the maximum depth of the tree (7), learning rate (0.1), etc., and used 50 rounds of boosting. Through these steps, I have finally developed a model for predicting feedback types (success or failure), and I will evaluate its performance using test data.
+
+# 5 Prediction performance on the test sets
+### 5.1) Model testing performance from session 1 and 18
+
+```{r, echo=FALSE}
+
+pred_probs <- predict(xgb_model, test_x)
+pred_labels <- ifelse(pred_probs > 0.5, 1, 0)
+
+accuracy <- mean(pred_labels == test_y)
+print(paste("XGBoost Model Accuracy:", round(accuracy, 4)))
+
+conf_matrix <- confusionMatrix(factor(pred_labels), factor(test_y))
+print(conf_matrix$table)
+
+```
+
+In this section of model testing, I used data from sessions 1 and 18 to evaluate the performance of the model. Firstly, I have the model make predictions and then convert the predicted results into labels of 0 or 1. Next, I calculated the accuracy of the model, which is the proportion of its correct predictions. Then, I used a confusion matrix to help understand the performance of the model. This matrix displays the relationship between the predicted results and the actual results. For example, how many times has the model predicted "success" but actually "failure", or how many times has the model predicted "failure" but actually "success". From the test results, the accuracy of the model is 75.15%.
+
+
+# 6 Discussion
+### 6.1) Model Performance & Confusion Matrix analysis
+
+```{r, echo=FALSE}
+
+library(caret)
+library(ggplot2)
+library(pROC)
+
+
+pred_probs <- predict(xgb_model, test_x)
+pred_labels <- factor(pred_labels, levels = c(0, 1))
+test_y <- factor(test_y, levels = c(0, 1))
+
+precision <- posPredValue(pred_labels, test_y)
+recall <- sensitivity(pred_labels, test_y)
+f1_score <- (2 * precision * recall) / (precision + recall)
+auc <- roc(test_y, pred_probs)$auc
+
+
+
+
+conf_matrix <- confusionMatrix(pred_labels, test_y)
+
+print(conf_matrix)
+conf_matrix_table <- as.data.frame(as.table(conf_matrix$table))
+
+
+colnames(conf_matrix_table) <- c("Predicted", "Actual", "Freq")
+
+ggplot(conf_matrix_table, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "lightpink") +
+  labs(title = "Confusion Matrix Heatmap", x = "Predicted", y = "Actual")
+
+```
+
+Firstly, the accuracy rate is 75.15%, which means that approximately 75% of the predictions are correct. Furthermore, the sensitivity is 12.26%, indicating that the model's ability to recognize positive classes (such as "successful") is weak. On the contrary, the specificity is 97.5%, indicating that the model can accurately identify negative class (such as "failed") samples and almost never miss negative class samples. In addition, the positive prediction value is 64.7%, which means that there is a 68.18% probability that the model is correct when predicting a positive class. The negative prediction value is 75.7%, which means that when the model predicts a negative class, its probability of being correct is relatively high. The Kappa value is 1372, indicating that the predictive ability of the model is slightly better than random guessing. In summary, this model can effectively distinguish "failed" samples, but there is room for improvement in identifying "successful" samples.
+
+### 6.2) Model Predictors importance analysis
+```{r, echo=FALSE}
+
+importance <- xgb.importance(feature_names = colnames(train_x), model = xgb_model)
+
+xgb.plot.importance(importance_matrix = importance)
+```
+
+According to the analysis of feature importance in the model, late_stike_rate has the greatest impact on predicting feedbacktype, significantly higher than other features. This means that late peak frequencies in neural activity dominate in feedback prediction. Following closely behind is early_skike_rate, indicating that neural activity in the early stages of the task also has a significant impact on the results. In addition, contrast-diff (the difference in left and right contrast) also makes a significant contribution to model prediction, indicating that differences in stimulus intensity may affect neural responses and ultimately affect the type of feedback. The influence of mean\_ spike rate is relatively low, possibly because it reflects the overall level of neural activity rather than the activity pattern during a specific time period. Relatively speaking, mouse_name has the least impact on the prediction results.
+
+# Conclusion
+
+In this project, we successfully explored how neural activity in the visual cortex of mice affects their decision-making ability in contrast discrimination tasks. By analyzing the neural data of 18 sessions in four mice, we were able to construct a predictive model to predict 'success' or' failure '. I analyzed the basic data for visualization and observed that the early and late peak rates, as well as the contrast difference between stimuli, are important predictive factors for decision outcomes. In addition, I integrated these features into the prediction model and ultimately chose the XGBoost model as the best model for classifying mouse selection directions.
+Throughout the project, we utilized various statistical techniques such as PCA for dimensionality reduction and explored the impact of different features on model accuracy. The model results evaluated using test data from session 1 and 18 indicate that neural activity is closely related to the ability of mice to make correct decisions, and ultimately achieving an accuracy of 75%. In summary, this project analysis emphasizes the complexity and importance of neural activity in the decision-making process, and the predictive model demonstrates the use of neural data to understand visual cognitive tasks.
+
+## Reference
+Steinmetz, N.A., Zatka-Haas, P., Carandini, M. et al. Distributed coding of choice, action and engagement across the mouse brain. Nature 576, 266–273 (2019). https://doi.org/10.1038/s41586-019-1787-x
