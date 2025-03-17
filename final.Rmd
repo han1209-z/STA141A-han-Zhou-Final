@@ -22,8 +22,9 @@ set.seed(456)
 
 session=list()
 for(i in 1:18){
-  session[[i]]=readRDS(paste('/Users/zhou/Desktop/STA141AProject/Data/session',i,'.rds',sep=''))
-}
+  session[[i]]=readRDS(paste('./Data/session',i,'.rds',sep=''))
+
+  }
 
 behavior_stats <- data.frame()
 for (i in 1:18) {
