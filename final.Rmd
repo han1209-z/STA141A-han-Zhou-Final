@@ -788,6 +788,7 @@ According to the analysis of feature importance in the model, late_stike_rate ha
 
 In this project, we successfully explored how neural activity in the visual cortex of mice affects their decision-making ability in contrast discrimination tasks. By analyzing the neural data of 18 sessions in four mice, we were able to construct a predictive model to predict 'success' or' failure '. I analyzed the basic data for visualization and observed that the early and late peak rates, as well as the contrast difference between stimuli, are important predictive factors for decision outcomes. In addition, I integrated these features into the prediction model and ultimately chose the XGBoost model as the best model for classifying mouse selection directions.
 Throughout the project, we utilized various statistical techniques such as PCA for dimensionality reduction and explored the impact of different features on model accuracy. The model results evaluated using test data from session 1 and 18 indicate that neural activity is closely related to the ability of mice to make correct decisions, and ultimately achieving an accuracy of 75%. In summary, this project analysis emphasizes the complexity and importance of neural activity in the decision-making process, and the predictive model demonstrates the use of neural data to understand visual cognitive tasks.
-
+## Acknowledgement 
+https://chatgpt.com/share/67d7e9b9-2de4-8007-b3c7-215e2c1fa3be
 ## Reference
 Steinmetz, N.A., Zatka-Haas, P., Carandini, M. et al. Distributed coding of choice, action and engagement across the mouse brain. Nature 576, 266–273 (2019). https://doi.org/10.1038/s41586-019-1787-x
